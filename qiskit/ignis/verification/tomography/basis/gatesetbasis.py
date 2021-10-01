@@ -50,7 +50,8 @@ class GateSetBasis:
     def __init__(self,
                  name: str,
                  gates: Dict[str, Union[Callable, Gate]],
-                 spam: Dict[str, Tuple[str]]
+                 spam: Dict[str, Tuple[str]],
+                 num_qubits:int
                  ):
         """
         Initialize the gate set basis data
@@ -67,6 +68,7 @@ class GateSetBasis:
                               for (name, gate) in gates.items()}
         self.spam_labels = tuple(sorted(spam.keys()))
         self.spam_spec = spam
+        self.num_qubits=num_qubits
 
     def _gate_matrix(self, gate):
         """Gets a PTM representation of the gate"""
