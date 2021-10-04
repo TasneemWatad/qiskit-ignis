@@ -27,7 +27,7 @@ from qiskit.result import Result
 from qiskit.quantum_info import Choi, PTM, Operator, DensityMatrix
 from ..basis.gatesetbasis import default_gateset_basis, GateSetBasis
 from .base_fitter import TomographyFitter
-
+from qiskit.quantum_info import Pauli
 
 class GatesetTomographyFitter:
     def __init__(self,
@@ -61,12 +61,12 @@ class GatesetTomographyFitter:
             from qiskit.ignis.verification.basis import default_gateset_basis
             from qiskit.ignis.verification import gateset_tomography_circuits
             from qiskit.ignis.verification import GateSetTomographyFitter
-
+            num_qubits=1
             gate = HGate()
-            basis = default_gateset_basis()
+            basis = default_gateset_basis(num_qubits)
             basis.add_gate(gate)
             backend = ...
-            circuits = gateset_tomography_circuits(gateset_basis=basis)
+            circuits = gateset_tomography_circuits(num_qubits,[*range(num_qubits)],gateset_basis=basis)
             qobj = assemble(circuits, shots=10000)
             result = backend.run(qobj).result()
             fitter = GatesetTomographyFitter(result, circuits, basis)
@@ -76,10 +76,12 @@ class GatesetTomographyFitter:
         self.gateset_basis = gateset_basis
         if gateset_basis == 'default':
             self.gateset_basis = default_gateset_basis()
+        self.num_qubits = self.gateset_basis.num_qubits
         data = TomographyFitter(result, circuits).data
         self.probs = {}
         for key, vals in data.items():
-            self.probs[key] = vals.get('0', 0) / sum(vals.values())
+            # We assume the POVM is always |E>=|0000..><0000..|
+            self.probs[key] = vals.get('0'*self.num_qubits, 0) / sum(vals.values())
 
     def linear_inversion(self) -> Dict[str, PTM]:
         """
@@ -146,23 +148,48 @@ class GatesetTomographyFitter:
         result['rho'] = gram_inverse @ rho
         return result
 
-    def _default_init_state(self, size):
-        """Returns the PTM representation of the usual ground state"""
-        if size == 4:
-            return np.array([[np.sqrt(0.5)], [0], [0], [np.sqrt(0.5)]])
-        raise RuntimeError("No default init state for more than 1 qubit")
+    @staticmethod
+    def _Pauli_strings(num_qubits):
+        """Returns the matrix representation of Pauli strings of size=num_qubits. e.g., for num_qubits=2, it returns
+        the matrix representations of ['II','IX','IY','IZ,'XI','YI',...]"""
+        pauli_labels = ['I', 'X', 'Y', 'Z']
+        Pauli_strings_matrices = [Pauli(''.join(p)).to_matrix() for p in
+                                  itertools.product(pauli_labels, repeat=num_qubits)]
+        return Pauli_strings_matrices
 
-    def _default_measurement_op(self, size):
+    @staticmethod
+    def _default_init_state(num_qubits):
+        """Returns the PTM representation of the usual ground state |00...>"""
+        d = np.power(2, num_qubits)
+
+        # matrix representation of #rho in regular Hilbert space
+        matrix_init_0 = np.zeros((d, d), dtype=complex)
+        matrix_init_0[0, 0] = 1
+
+        # decompoition into Pauli strings basis (PTM representation)
+        matrix_init_pauli = [(1 / d) * np.trace(np.dot(matrix_init_0, _Pauli_strings(num_qubits)[i])) for i in
+                             range(np.power(d, 2))]
+        return np.reshape(matrix_init_pauli, (np.power(d, 2), 1))
+
+    @staticmethod
+    def _default_measurement_op(num_qubits):
         """The PTM representation of the usual Z-basis measurement"""
-        if size == 4:
-            return np.array([[np.sqrt(0.5), 0, 0, np.sqrt(0.5)]])
-        raise RuntimeError("No default measurement op for more than 1 qubit")
+        d = np.power(2, num_qubits)
 
-    def _ideal_gateset(self, size):
+        # matrix representation of #E=|00..><00...| in regular Hilbert space
+        matrix_meas_0 = np.zeros((d, d), dtype=complex)
+        matrix_meas_0[0, 0] = 1
+
+        # decompoition into Pauli strings basis (PTM representation)
+        matrix_meas_pauli = [(1 / d) * np.trace(np.dot(matrix_meas_0, _Pauli_strings(num_qubits)[i])) for i in
+                             range(np.power(d, 2))]
+        return matrix_meas_pauli
+
+    def _ideal_gateset(self, num_qubits):
         ideal_gateset = {label: PTM(self.gateset_basis.gate_matrices[label])
                          for label in self.gateset_basis.gate_labels}
-        ideal_gateset['E'] = self._default_measurement_op(size)
-        ideal_gateset['rho'] = self._default_init_state(size)
+        ideal_gateset['E'] = default_measurement_op(num_qubits)
+        ideal_gateset['rho'] = default_init_state(num_qubits)
         return ideal_gateset
 
     def fit(self) -> Dict:
@@ -182,8 +209,8 @@ class GatesetTomographyFitter:
             3) Use MLE optimization to obtain the final outcome
         """
         linear_inversion_results = self.linear_inversion()
-        n = len(self.gateset_basis.spam_labels)
-        gauge_opt = GaugeOptimize(self._ideal_gateset(n),
+        #n = len(self.gateset_basis.spam_labels)
+        gauge_opt = GaugeOptimize(self._ideal_gateset(self.gateset_basis.num_qubits),
                                   linear_inversion_results,
                                   self.gateset_basis)
         past_gauge_gateset = gauge_opt.optimize()
@@ -251,11 +278,12 @@ class GaugeOptimize():
         try:
             BB = np.linalg.inv(B)
         except np.linalg.LinAlgError:
-            return None
-        gateset = {label: PTM(BB @ self.initial_gateset[label].data @ B)
+            BB=np.linalg.pinv(B)
+            # return None    #I will let it return the Pseudo inverse matrix eaither way
+        gateset = {label: PTM(B @ self.initial_gateset[label].data @ BB)
                    for label in self.gateset_basis.gate_labels}
-        gateset['E'] = self.initial_gateset['E'] @ B
-        gateset['rho'] = BB @ self.initial_gateset['rho']
+        gateset['E'] = self.initial_gateset['E'] @ BB
+        gateset['rho'] = B @ self.initial_gateset['rho']
         return gateset
 
     def _obj_fn(self, x: np.array) -> float:
