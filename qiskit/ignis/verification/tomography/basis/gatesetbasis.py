@@ -28,7 +28,6 @@ from qiskit.circuit.library import U2Gate
 from qiskit.quantum_info import PTM
 from .tomographybasis import TomographyBasis
 
-
 class GateSetBasis:
     """
     This class contains the gateset data needed to perform gateset tomgography.
@@ -68,15 +67,18 @@ class GateSetBasis:
                               for (name, gate) in gates.items()}
         self.spam_labels = tuple(sorted(spam.keys()))
         self.spam_spec = spam
-        self.num_qubits=num_qubits
+        self.num_qubits= num_qubits
 
     def _gate_matrix(self, gate):
         """Gets a PTM representation of the gate"""
         if isinstance(gate, Gate):
             return PTM(gate).data
         if callable(gate):
-            c = QuantumCircuit(1)
-            gate(c, c.qubits[0])
+            c = QuantumCircuit(self.num_qubits)
+            qubits=[]
+            for i in range(self.num_qubits):
+                qubits.append(c.qubits[i])
+            gate(c, *qubits)
             return PTM(c).data
         return None
 
@@ -100,41 +102,40 @@ class GateSetBasis:
         self.gates[name] = gate
         self.gate_matrices[name] = self._gate_matrix(gate)
 
-    def add_gate_to_circuit(self,
-                            circ: QuantumCircuit,
-                            qubit: QuantumRegister,
+    def add_gate_to_circuit(self,circ: QuantumCircuit,
+                            qubits: QuantumRegister,
                             op: str
                             ):
-        """
-        Adds the gate op to circ at qubit
 
+        """
+        Adds the gate op to circ at qubits
         Args:
             circ: the circuit to apply op on
-            qubit: qubit to be operated on
+            qubits: qubit to be operated on
             op: gate name
-
         Raises:
             RuntimeError: if `op` does not describe a gate
         """
+        #print(self.gates,'gates')
         if op not in self.gates:
             raise RuntimeError("{} is not a SPAM circuit".format(op))
         gate = self.gates[op]
         if callable(gate):
-            gate(circ, qubit)
+            gate(circ, *qubits)
         if isinstance(gate, Gate):
-            circ.append(gate, [qubit], [])
+            circ.append(gate,qubits,[])
 
     def add_spam_to_circuit(self,
                             circ: QuantumCircuit,
-                            qubit: QuantumRegister,
+                            qubits: QuantumRegister,
                             op: str
                             ):
         """
-        Adds the SPAM circuit op to circ at qubit
+        Adds the SPAM circuit op to circ at qubits
 
         Args:
             circ: the circuit to apply op on
-            qubit: qubit to be operated on
+            qubits: qubits to be operated on
             op: SPAM circuit name
 
         Raises:
@@ -144,80 +145,14 @@ class GateSetBasis:
             raise RuntimeError("{} is not a SPAM circuit".format(op))
         op_gates = self.spam_spec[op]
         for gate_name in op_gates:
-            self.add_gate_to_circuit(circ, qubit, gate_name)
-
-    def measurement_circuit(self,
-                            op: str,
-                            qubit: QuantumRegister,
-                            clbit: ClassicalRegister
-                            ) -> QuantumCircuit:
-        """
-        Creates a measurement circuit for the SPAM op
-
-        Params:
-            op: SPAM circuit name
-            qubit: qubit to be operated on and measured
-            clbit: clbit for measurement outcome.
-
-        Returns:
-            The measurement circuit
-        """
-        circ = QuantumCircuit([qubit, clbit])
-        self.add_spam_to_circuit(circ, qubit, op)
-        circ.measure(qubit, clbit)
-        return circ
-
-    def measurement_matrix(self, label: str) -> np.array:
-        """
-         Returns the matrix corresponding to a gate label
-
-        Args:
-            label: Gate label
-
-        Returns:
-            The corresponding matrix
-        """
-        return self.gate_matrices[label]
-
-    def preparation_circuit(self,
-                            op: str,
-                            qubit: QuantumRegister
-                            ) -> QuantumCircuit:
-        """
-        Creates a preperation circuit for the SPAM op
-
-        Params:
-            op: SPAM circuit name
-            qubit: qubit to be operated on
-
-        Returns:
-            The preperation circuit
-        """
-        circ = QuantumCircuit([qubit])
-        self.add_spam_to_circuit(circ, qubit, op)
-        return circ
-
-    def preparation_matrix(self, label: str) -> np.array:
-        """
-        Returns the matrix corresponding to a gate label
-
-        Params:
-            label: Gate label
-
-        Returns:
-            The corresponding matrix
-        """
-        return self.gate_matrices[label]
-
+            self.add_gate_to_circuit(circ, qubits, gate_name)
     def spam_matrix(self, label: str) -> np.array:
         """
         Returns the matrix corresponding to a spam label
         Every spam is a sequence of gates, and so the result matrix
         is the product of the matrices corresponding to those gates
-
         Params:
             label: Spam label
-
         Returns:
             The corresponding matrix
         """
@@ -226,42 +161,103 @@ class GateSetBasis:
         result = functools.reduce(lambda a, b: a @ b, f_matrices)
         return result
 
-    def get_tomography_basis(self) -> TomographyBasis:
-        """
-        Returns a TomographyBasis object
-        corresponding to the gate set tomography data
 
-        A TomographyBasis object should have
-        for both measurements and preperations
-        the sets of labels (the SPAM labels in our case),
-        circuit creation functions and corresponding matrices
-
-        Returns:
-            The gateset tomography data formatted as a TomographyBasis object
-        """
-        return TomographyBasis(self.name,
-                               measurement=(self.spam_labels,
-                                            self.measurement_circuit,
-                                            self.measurement_matrix),
-                               preparation=(self.spam_labels,
-                                            self.preparation_circuit,
-                                            self.preparation_matrix))
-
-
-def default_gateset_basis():
+def default_gateset_basis(num_qubits):
     """Returns a default tomographically-complete gateset basis
-        Return value: The gateset given as example 3.4.1 in arXiv:1509.02921
 
+       Args:
+       num_qubits: The number of qubits. This takes one of the two values: 1 for the case of performing gateset
+       tomography on one single qubit and 2 for the two-qubit case.
+
+
+       Return value: The default gateset (for 1 qubit, it is the gateset as in example 3.4.1 in arXiv:1509.02921)
+
+       Raises:
+          QiskitError: if num_qubits is larger than 2.
     """
-    default_gates = {
+
+    if num_qubits > 2:
+        raise QiskitError("Three qubits or more are not supported")
+
+    # In lambda func., the argument qubit here is a single qubit: i.e., Qubit(QuantumRegister(),i)
+    default_gates_single = {
         'Id': lambda circ, qubit: None,
         'X_Rot_90': lambda circ, qubit: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit]),
-        'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(np.pi, np.pi), [qubit])
+        'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(0, 0), [qubit])  # changesshould be this way
     }
-    default_spam = {
+
+    default_spam_single = {
         'F0': ('Id',),
         'F1': ('X_Rot_90',),
         'F2': ('Y_Rot_90',),
         'F3': ('X_Rot_90', 'X_Rot_90')
     }
-    return GateSetBasis('Default GST', default_gates, default_spam)
+
+    ####################################
+
+    # Two-Qubit
+    # AB stands for acting with A gate on qubit2 and with gate B on qubit1.
+    # Ex. XI- Apply X on qubit 1, and do nothing for qubit2.
+
+    """
+    default_gates_two = {
+
+    'IdId': lambda circ, qubit1,qubit2: None,
+    'XI': lambda circ, qubit1,qubit2: circ.x(qubit2),
+    'YI': lambda circ, qubit1, qubit2: circ.x(qubit2),  #Q.      #should we do it this way or .append?
+    'IX': lambda circ, qubit1,qubit2: circ.x(qubit1),
+    'IY': lambda circ, qubit1, qubit2: circ.x(qubit1),
+    'CX': lambda circ, qubit1, qubit2: circ.cx(qubit1,qubit2) #qubit1 is the ctrl qubit, qubit2 is the target
+    }
+
+    default_spam_two = {
+        'F0': ('IdId',),
+        'F1': ('XI',),
+        'F2': ('YI',),
+        'F3': ('IX',),
+        'F4': ('IY',),
+        'F5': ('CX',),
+        'F6': ('XI','IX',),
+        'F7': ('XI','IY',),
+        'F8': ('XI','YI',),
+        'F9': ('IX','IY',),
+        'F10': ('YI','IX',),
+        'F11': ('YI', 'IY',),
+        'F12': ('CX','YI',),
+        'F13': ('YI','CX',),
+        'F14': ('XI','YI','IY',),
+        'F15': ('XI', 'YI','IX',)
+    }
+    """
+    default_gates_two = {
+
+        'IdId': lambda circ, qubit1, qubit2: None,
+        'X_Rot_90 I': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit2]),
+        'Y_Rot_90 I': lambda circ, qubit1, qubit2: circ.append(U2Gate(0, 0), [qubit2]),
+        # Q.      #should we do it this way or .append?
+        'I X_Rot_90': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit1]),
+        'I Y_Rot_90': lambda circ, qubit1, qubit2: circ.append(U2Gate(0, 0), [qubit2]),
+        'CX': lambda circ, qubit1, qubit2: circ.cx(qubit1, qubit2)  # qubit1 is the ctrl qubit, qubit2 is the target
+    }
+
+    default_spam_two = {
+        'F0': ('IdId',),
+        'F1': ('X_Rot_90 I',),
+        'F2': ('Y_Rot_90 I',),
+        'F3': ('I X_Rot_90',),
+        'F4': ('I Y_Rot_90',),
+        'F5': ('CX',),
+        'F6': ('X_Rot_90 I', 'I X_Rot_90',),
+        'F7': ('X_Rot_90 I', 'I Y_Rot_90',),
+        'F8': ('X_Rot_90 I', 'Y_Rot_90 I',),
+        'F9': ('I X_Rot_90', 'I Y_Rot_90',),
+        'F10': ('Y_Rot_90 I', 'I X_Rot_90',),
+        'F11': ('Y_Rot_90 I', 'I Y_Rot_90',),
+        'F12': ('CX', 'Y_Rot_90 I',),
+        'F13': ('Y_Rot_90 I', 'CX',),
+        'F14': ('X_Rot_90 I', 'Y_Rot_90 I', 'I Y_Rot_90',),
+        'F15': ('X_Rot_90 I', 'Y_Rot_90 I', 'I X_Rot_90',)
+    }
+
+    return GateSetBasis('Default GST', default_gates_single, default_spam_single,
+                        1) if num_qubits == 1 else GateSetBasis('Default GST', default_gates_two, default_spam_two, 2)
