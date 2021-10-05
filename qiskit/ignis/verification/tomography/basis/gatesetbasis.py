@@ -60,6 +60,7 @@ class GateSetBasis:
             gates: The gate data (name -> gate/gate function)
             spam: The spam data (name -> sequence of gate names)
         """
+        self.num_qubits=num_qubits
         self.name = name
         self.gate_labels = list(gates.keys())
         self.gates = gates
@@ -67,7 +68,6 @@ class GateSetBasis:
                               for (name, gate) in gates.items()}
         self.spam_labels = tuple(sorted(spam.keys()))
         self.spam_spec = spam
-        self.num_qubits= num_qubits
 
     def _gate_matrix(self, gate):
         """Gets a PTM representation of the gate"""
