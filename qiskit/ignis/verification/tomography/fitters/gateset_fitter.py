@@ -28,6 +28,7 @@ from qiskit.quantum_info import Choi, PTM, Operator, DensityMatrix
 from ..basis.gatesetbasis import default_gateset_basis, GateSetBasis
 from .base_fitter import TomographyFitter
 from qiskit.quantum_info import Pauli
+from functools import reduce
 
 class GatesetTomographyFitter:
     def __init__(self,
@@ -167,7 +168,7 @@ class GatesetTomographyFitter:
         matrix_init_0[0, 0] = 1
 
         # decompoition into Pauli strings basis (PTM representation)
-        matrix_init_pauli = [(1 / d) * np.trace(np.dot(matrix_init_0, _Pauli_strings(num_qubits)[i])) for i in
+        matrix_init_pauli = [np.trace(np.dot(matrix_init_0, _Pauli_strings(num_qubits)[i])) for i in
                              range(np.power(d, 2))]
         return np.reshape(matrix_init_pauli, (np.power(d, 2), 1))
 
@@ -181,7 +182,7 @@ class GatesetTomographyFitter:
         matrix_meas_0[0, 0] = 1
 
         # decompoition into Pauli strings basis (PTM representation)
-        matrix_meas_pauli = [(1 / d) * np.trace(np.dot(matrix_meas_0, _Pauli_strings(num_qubits)[i])) for i in
+        matrix_meas_pauli = [np.trace(np.dot(matrix_meas_0, _Pauli_strings(num_qubits)[i])) for i in
                              range(np.power(d, 2))]
         return matrix_meas_pauli
 
@@ -217,7 +218,7 @@ class GatesetTomographyFitter:
         optimizer = GST_Optimize(self.gateset_basis.gate_labels,
                                  self.gateset_basis.spam_labels,
                                  self.gateset_basis.spam_spec,
-                                 self.probs)
+                                 self.probs,self.num_qubits)
         optimizer.set_initial_value(past_gauge_gateset)
         optimization_results = optimizer.optimize()
         return optimization_results
@@ -315,6 +316,16 @@ class GaugeOptimize():
         return self._x_to_gateset(result.x)
 
 
+def Pauli_strings(num_qubits):
+    """Returns the normalized matrix representation of Pauli strings basis of size=num_qubits. e.g., for num_qubits=2, it returns
+    the matrix representations of 0.5*['II','IX','IY','IZ,'XI','YI',...]"""
+    pauli_labels=['I','X','Y','Z']
+    Pauli_strings_matrices=[Pauli(''.join(p)).to_matrix() for p in itertools.product(pauli_labels, repeat=num_qubits)]
+    #normalization
+    Pauli_strings_matrices_orthonormal=[(1/np.sqrt(2**(num_qubits)))*Pauli_strings_matrices[i] for i in range(len(Pauli_strings_matrices))]
+    return Pauli_strings_matrices_orthonormal
+
+
 def get_cholesky_like_decomposition(mat: np.array) -> np.array:
     """Given a PSD matrix A, finds a matrix T such that TT^{dagger}
     is an approximation of A
@@ -337,7 +348,7 @@ class GST_Optimize():
                  Fs_names: Tuple[str],
                  Fs: Dict[str, Tuple[str]],
                  probs: Dict[Tuple[str], float],
-                 qubits: int = 1
+                 qubits:int
                  ):
         """Initializes the data for the MLE optimizer
         Args:
@@ -345,7 +356,7 @@ class GST_Optimize():
             Fs_names: The names of the SPAM circuits
             Fs: The SPAM specification (SPAM name -> gate names)
             probs: The probabilities obtained experimentally
-            qubits: the size of the gates in the gateset
+            qubits: number of qubits
         """
         self.probs = probs
         self.Gs = Gs
@@ -670,14 +681,14 @@ class GST_Optimize():
         cons.append({'type': 'ineq', 'fun': self._bounds_ineq_constraint})
         return cons
 
-    def _convert_from_ptm(self, vector):
+    def _convert_from_ptm(self,vector):
         """Converts a vector back from PTM representation"""
-        Id = np.sqrt(0.5) * np.array([[1, 0], [0, 1]])
-        X = np.sqrt(0.5) * np.array([[0, 1], [1, 0]])
-        Y = np.sqrt(0.5) * np.array([[0, -1j], [1j, 0]])
-        Z = np.sqrt(0.5) * np.array([[1, 0], [0, -1]])
-        v = vector.reshape(4)
-        return v[0] * Id + v[1] * X + v[2] * Y + v[3] * Z
+        num_qubits=self.qubits
+        Pauli_strings_matrices=Pauli_strings(num_qubits)
+        v = vector.reshape(np.size(vector))
+        v_converted=np.zeros((2**num_qubits,2**num_qubits))
+        n=[a*b for a,b in zip(v,Pauli_strings_matrices)]
+        return reduce(lambda x,y:np.add(x,y),n)
 
     def _process_result(self, x: np.array) -> Dict:
         """Transforms the optimization result to a friendly format
