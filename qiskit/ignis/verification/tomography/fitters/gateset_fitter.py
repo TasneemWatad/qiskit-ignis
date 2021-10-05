@@ -168,7 +168,7 @@ class GatesetTomographyFitter:
         matrix_init_0[0, 0] = 1
 
         # decompoition into Pauli strings basis (PTM representation)
-        matrix_init_pauli = [np.trace(np.dot(matrix_init_0, _Pauli_strings(num_qubits)[i])) for i in
+        matrix_init_pauli = [np.trace(np.dot(matrix_init_0, Pauli_strings(num_qubits)[i])) for i in
                              range(np.power(d, 2))]
         return np.reshape(matrix_init_pauli, (np.power(d, 2), 1))
 
@@ -182,15 +182,15 @@ class GatesetTomographyFitter:
         matrix_meas_0[0, 0] = 1
 
         # decompoition into Pauli strings basis (PTM representation)
-        matrix_meas_pauli = [np.trace(np.dot(matrix_meas_0, _Pauli_strings(num_qubits)[i])) for i in
+        matrix_meas_pauli = [np.trace(np.dot(matrix_meas_0, Pauli_strings(num_qubits)[i])) for i in
                              range(np.power(d, 2))]
         return matrix_meas_pauli
 
     def _ideal_gateset(self, num_qubits):
         ideal_gateset = {label: PTM(self.gateset_basis.gate_matrices[label])
                          for label in self.gateset_basis.gate_labels}
-        ideal_gateset['E'] = default_measurement_op(num_qubits)
-        ideal_gateset['rho'] = default_init_state(num_qubits)
+        ideal_gateset['E'] = self._default_measurement_op(num_qubits)
+        ideal_gateset['rho'] =self._default_init_state(num_qubits)
         return ideal_gateset
 
     def fit(self) -> Dict:
