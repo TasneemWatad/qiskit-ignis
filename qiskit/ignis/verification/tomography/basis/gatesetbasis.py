@@ -259,5 +259,4 @@ def default_gateset_basis(num_qubits):
         'F15': ('X_Rot_90 I', 'Y_Rot_90 I', 'I X_Rot_90',)
     }
 
-    return GateSetBasis('Default GST', default_gates_single, default_spam_single,
-                        1) if num_qubits == 1 else GateSetBasis('Default GST', default_gates_two, default_spam_two, 2)
+    return GateSetBasis('Default GST', default_gates_single, default_spam_single,1) if num_qubits == 1 else GateSetBasis('Default GST', default_gates_two, default_spam_two, 2)
