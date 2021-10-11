@@ -30,6 +30,7 @@ from .base_fitter import TomographyFitter
 from qiskit.quantum_info import Pauli
 from functools import reduce
 
+
 class GatesetTomographyFitter:
     def __init__(self,
                  result: Result,
@@ -74,9 +75,10 @@ class GatesetTomographyFitter:
             result_gates = fitter.fit()
             result_gate = result_gates[gate.name]
         """
+        num_qubits = gateset_basis.num_qubits
         self.gateset_basis = gateset_basis
         if gateset_basis == 'default':
-            self.gateset_basis = default_gateset_basis()
+            self.gateset_basis = default_gateset_basis(num_qubits)
         self.num_qubits = self.gateset_basis.num_qubits
         data = TomographyFitter(result, circuits).data
         self.probs = {}
@@ -190,7 +192,7 @@ class GatesetTomographyFitter:
         ideal_gateset = {label: PTM(self.gateset_basis.gate_matrices[label])
                          for label in self.gateset_basis.gate_labels}
         ideal_gateset['E'] = self._default_measurement_op(num_qubits)
-        ideal_gateset['rho'] =self._default_init_state(num_qubits)
+        ideal_gateset['rho'] = self._default_init_state(num_qubits)
         return ideal_gateset
 
     def fit(self) -> Dict:
@@ -210,7 +212,7 @@ class GatesetTomographyFitter:
             3) Use MLE optimization to obtain the final outcome
         """
         linear_inversion_results = self.linear_inversion()
-        #n = len(self.gateset_basis.spam_labels)
+        # n = len(self.gateset_basis.spam_labels)
         gauge_opt = GaugeOptimize(self._ideal_gateset(self.gateset_basis.num_qubits),
                                   linear_inversion_results,
                                   self.gateset_basis)
@@ -218,7 +220,7 @@ class GatesetTomographyFitter:
         optimizer = GST_Optimize(self.gateset_basis.gate_labels,
                                  self.gateset_basis.spam_labels,
                                  self.gateset_basis.spam_spec,
-                                 self.probs,self.num_qubits)
+                                 self.probs, self.num_qubits)
         optimizer.set_initial_value(past_gauge_gateset)
         optimization_results = optimizer.optimize()
         return optimization_results
@@ -279,7 +281,7 @@ class GaugeOptimize():
         try:
             BB = np.linalg.inv(B)
         except np.linalg.LinAlgError:
-            BB=np.linalg.pinv(B)
+            BB = np.linalg.pinv(B)
             # return None    #I will let it return the Pseudo inverse matrix eaither way
         gateset = {label: PTM(B @ self.initial_gateset[label].data @ BB)
                    for label in self.gateset_basis.gate_labels}
@@ -317,13 +319,13 @@ class GaugeOptimize():
 
 
 def Pauli_strings(num_qubits):
-    """Returns the normalized matrix representation of Pauli strings basis of size=num_qubits. e.g., for num_qubits=2, it returns
-    the matrix representations of 0.5*['II','IX','IY','IZ,'XI','YI',...]"""
-    pauli_labels=['I','X','Y','Z']
-    Pauli_strings_matrices=[Pauli(''.join(p)).to_matrix() for p in itertools.product(pauli_labels, repeat=num_qubits)]
-    #normalization
-    Pauli_strings_matrices_orthonormal=[(1/np.sqrt(2**(num_qubits)))*Pauli_strings_matrices[i] for i in range(len(Pauli_strings_matrices))]
-    return Pauli_strings_matrices_orthonormal
+    """Returns the normalized matrix representation of Pauli strings basis of size=num_qubits. e.g., for num_qubits=2,
+     it returns the matrix representations of 0.5*['II','IX','IY','IZ,'XI','YI',...]"""
+    pauli_labels = ['I', 'X', 'Y', 'Z']
+    pauli_strings_matrices = [Pauli(''.join(p)).to_matrix() for p in itertools.product(pauli_labels, repeat=num_qubits)]
+    # normalization
+    pauli_strings_matrices_orthonormal = [(1/np.sqrt(2**num_qubits))*pauli_strings_matrices[i] for i in range(len(pauli_strings_matrices))]
+    return pauli_strings_matrices_orthonormal
 
 
 def get_cholesky_like_decomposition(mat: np.array) -> np.array:
@@ -342,13 +344,13 @@ def get_cholesky_like_decomposition(mat: np.array) -> np.array:
     return unitary @ DD
 
 
-class GST_Optimize():
+class GST_Optimize:
     def __init__(self,
                  Gs: List[str],
                  Fs_names: Tuple[str],
                  Fs: Dict[str, Tuple[str]],
                  probs: Dict[Tuple[str], float],
-                 qubits:int
+                 qubits: int
                  ):
         """Initializes the data for the MLE optimizer
         Args:
@@ -681,14 +683,13 @@ class GST_Optimize():
         cons.append({'type': 'ineq', 'fun': self._bounds_ineq_constraint})
         return cons
 
-    def _convert_from_ptm(self,vector):
+    def _convert_from_ptm(self, vector):
         """Converts a vector back from PTM representation"""
-        num_qubits=self.qubits
-        Pauli_strings_matrices=Pauli_strings(num_qubits)
+        num_qubits = self.qubits
+        pauli_strings_matrices = Pauli_strings(num_qubits)
         v = vector.reshape(np.size(vector))
-        v_converted=np.zeros((2**num_qubits,2**num_qubits))
-        n=[a*b for a,b in zip(v,Pauli_strings_matrices)]
-        return reduce(lambda x,y:np.add(x,y),n)
+        n = [a*b for a, b in zip(v, pauli_strings_matrices)]
+        return reduce(lambda x, y: np.add(x, y), n)
 
     def _process_result(self, x: np.array) -> Dict:
         """Transforms the optimization result to a friendly format

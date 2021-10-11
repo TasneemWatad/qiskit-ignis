@@ -22,13 +22,14 @@ from typing import Tuple, Callable, Union, Optional, Dict
 import numpy as np
 
 # Import QISKit classes
-from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.circuit import Gate
-from qiskit.circuit.library import U2Gate
+from qiskit.circuit.library import U2Gate, XGate, YGate, HGate, CXGate
 from qiskit.quantum_info import PTM
-from .tomographybasis import TomographyBasis
+
 
 class GateSetBasis:
+
     """
     This class contains the gateset data needed to perform gateset tomgography.
     The gateset tomography data consists of two sets, G and F
@@ -50,7 +51,7 @@ class GateSetBasis:
                  name: str,
                  gates: Dict[str, Union[Callable, Gate]],
                  spam: Dict[str, Tuple[str]],
-                 num_qubits:int
+                 num_qubits: int
                  ):
         """
         Initialize the gate set basis data
@@ -60,27 +61,17 @@ class GateSetBasis:
             gates: The gate data (name -> gate/gate function)
             spam: The spam data (name -> sequence of gate names)
         """
-        self.num_qubits=num_qubits
+        self.num_qubits = num_qubits
         self.name = name
         self.gate_labels = list(gates.keys())
         self.gates = gates
-        self.gate_matrices = {name: np.real(self._gate_matrix(gate))
+        self.gate_matrices = {name: np.real(gate_matrix(self.num_qubits,gate))
                               for (name, gate) in gates.items()}
         self.spam_labels = tuple(sorted(spam.keys()))
         self.spam_spec = spam
 
-    def _gate_matrix(self, gate):
-        """Gets a PTM representation of the gate"""
-        if isinstance(gate, Gate):
-            return PTM(gate).data
-        if callable(gate):
-            c = QuantumCircuit(self.num_qubits)
-            qubits=[]
-            for i in range(self.num_qubits):
-                qubits.append(c.qubits[i])
-            gate(c, *qubits)
-            return PTM(c).data
-        return None
+        if(gram_matrix_rank(self.num_qubits,list(self.spam_spec.values()),self.gates)[0]<(2**self.num_qubits)**2):
+            raise QiskitError("Gram matrix is rank deficient")
 
     def add_gate(self, gate: Union[Callable, Gate], name: Optional[str] = None):
         """Adds a new gate to the gateset
@@ -100,9 +91,9 @@ class GateSetBasis:
                 raise RuntimeError("Gate name is missing")
         self.gate_labels.append(name)
         self.gates[name] = gate
-        self.gate_matrices[name] = self._gate_matrix(gate)
+        self.gate_matrices[name] = gate_matrix(self.num_qubits,gate)
 
-    def add_gate_to_circuit(self,circ: QuantumCircuit,
+    def add_gate_to_circuit(self, circ: QuantumCircuit,
                             qubits: QuantumRegister,
                             op: str
                             ):
@@ -116,14 +107,13 @@ class GateSetBasis:
         Raises:
             RuntimeError: if `op` does not describe a gate
         """
-        #print(self.gates,'gates')
         if op not in self.gates:
             raise RuntimeError("{} is not a SPAM circuit".format(op))
         gate = self.gates[op]
         if callable(gate):
             gate(circ, *qubits)
         if isinstance(gate, Gate):
-            circ.append(gate,qubits,[])
+            circ.append(gate, qubits, [])
 
     def add_spam_to_circuit(self,
                             circ: QuantumCircuit,
@@ -146,6 +136,7 @@ class GateSetBasis:
         op_gates = self.spam_spec[op]
         for gate_name in op_gates:
             self.add_gate_to_circuit(circ, qubits, gate_name)
+
     def spam_matrix(self, label: str) -> np.array:
         """
         Returns the matrix corresponding to a spam label
@@ -170,27 +161,27 @@ def default_gateset_basis(num_qubits):
        tomography on one single qubit and 2 for the two-qubit case.
 
 
-       Return value: The default gateset (for 1 qubit, it is the gateset as in example 3.4.1 in arXiv:1509.02921)
+       Return value: The gateset given as example 3.4.1 in arXiv:1509.02921
 
        Raises:
           QiskitError: if num_qubits is larger than 2.
     """
 
     if num_qubits > 2:
-        raise QiskitError("Three qubits or more are not supported")
+        raise QiskitError("No default basis for three qubits or more")
 
-    # In lambda func., the argument qubit here is a single qubit: i.e., Qubit(QuantumRegister(),i)
+
     default_gates_single = {
         'Id': lambda circ, qubit: None,
-        'X_Rot_90': lambda circ, qubit: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit]),
+        'X': lambda circ, qubit: circ.append(XGate(), [qubit]),
         'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(0, 0), [qubit])  # changesshould be this way
     }
 
     default_spam_single = {
         'F0': ('Id',),
-        'F1': ('X_Rot_90',),
+        'F1': ('X',),
         'F2': ('Y_Rot_90',),
-        'F3': ('X_Rot_90', 'X_Rot_90')
+        'F3': ('X', 'Y_Rot_90')
     }
 
     ####################################
@@ -199,64 +190,194 @@ def default_gateset_basis(num_qubits):
     # AB stands for acting with A gate on qubit2 and with gate B on qubit1.
     # Ex. XI- Apply X on qubit 1, and do nothing for qubit2.
 
-    """
-    default_gates_two = {
-
-    'IdId': lambda circ, qubit1,qubit2: None,
-    'XI': lambda circ, qubit1,qubit2: circ.x(qubit2),
-    'YI': lambda circ, qubit1, qubit2: circ.x(qubit2),  #Q.      #should we do it this way or .append?
-    'IX': lambda circ, qubit1,qubit2: circ.x(qubit1),
-    'IY': lambda circ, qubit1, qubit2: circ.x(qubit1),
-    'CX': lambda circ, qubit1, qubit2: circ.cx(qubit1,qubit2) #qubit1 is the ctrl qubit, qubit2 is the target
-    }
-
-    default_spam_two = {
-        'F0': ('IdId',),
-        'F1': ('XI',),
-        'F2': ('YI',),
-        'F3': ('IX',),
-        'F4': ('IY',),
-        'F5': ('CX',),
-        'F6': ('XI','IX',),
-        'F7': ('XI','IY',),
-        'F8': ('XI','YI',),
-        'F9': ('IX','IY',),
-        'F10': ('YI','IX',),
-        'F11': ('YI', 'IY',),
-        'F12': ('CX','YI',),
-        'F13': ('YI','CX',),
-        'F14': ('XI','YI','IY',),
-        'F15': ('XI', 'YI','IX',)
-    }
-    """
     default_gates_two = {
 
         'IdId': lambda circ, qubit1, qubit2: None,
+        'X I': lambda circ, qubit1, qubit2: circ.append(XGate(), [qubit2]),
+        'I X': lambda circ, qubit1, qubit2: circ.append(XGate(), [qubit1]),
+        'H I': lambda circ, qubit1, qubit2: circ.append(HGate(), [qubit2]),
+        'I H': lambda circ, qubit1, qubit2: circ.append(HGate(), [qubit1]),
         'X_Rot_90 I': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit2]),
-        'Y_Rot_90 I': lambda circ, qubit1, qubit2: circ.append(U2Gate(0, 0), [qubit2]),
-        # Q.      #should we do it this way or .append?
         'I X_Rot_90': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit1]),
-        'I Y_Rot_90': lambda circ, qubit1, qubit2: circ.append(U2Gate(0, 0), [qubit2]),
-        'CX': lambda circ, qubit1, qubit2: circ.cx(qubit1, qubit2)  # qubit1 is the ctrl qubit, qubit2 is the target
+        # qubit1 is the ctrl qubit, qubit2 is the target
     }
 
     default_spam_two = {
         'F0': ('IdId',),
-        'F1': ('X_Rot_90 I',),
-        'F2': ('Y_Rot_90 I',),
-        'F3': ('I X_Rot_90',),
-        'F4': ('I Y_Rot_90',),
-        'F5': ('CX',),
-        'F6': ('X_Rot_90 I', 'I X_Rot_90',),
-        'F7': ('X_Rot_90 I', 'I Y_Rot_90',),
-        'F8': ('X_Rot_90 I', 'Y_Rot_90 I',),
-        'F9': ('I X_Rot_90', 'I Y_Rot_90',),
-        'F10': ('Y_Rot_90 I', 'I X_Rot_90',),
-        'F11': ('Y_Rot_90 I', 'I Y_Rot_90',),
-        'F12': ('CX', 'Y_Rot_90 I',),
-        'F13': ('Y_Rot_90 I', 'CX',),
-        'F14': ('X_Rot_90 I', 'Y_Rot_90 I', 'I Y_Rot_90',),
-        'F15': ('X_Rot_90 I', 'Y_Rot_90 I', 'I X_Rot_90',)
+        'F1': ('X I',),
+        'F2': ('I X',),
+        'F3': ('H I',),
+        'F4': ('I H',),
+        'F5': ('I X_Rot_90',),
+        'F6': ('X_Rot_90 I',),
+        'F7': ('X I', 'I X'),
+        'F8': ('X I', 'I H'),
+        'F9': ('X I', 'I X_Rot_90'),
+        'F10': ('I X', 'H I'),
+        'F11': ('I X', 'X_Rot_90 I'),
+        'F12': ('H I', 'I H'),
+        'F13': ('H I', 'I X_Rot_90'),
+        'F14': ('I H', 'X_Rot_90 I'),
+        'F15': ('I X_Rot_90', 'X_Rot_90 I')
     }
 
-    return GateSetBasis('Default GST', default_gates_single, default_spam_single,1) if num_qubits == 1 else GateSetBasis('Default GST', default_gates_two, default_spam_two, 2)
+    return GateSetBasis('Default GST', default_gates_single, default_spam_single,
+                        1) if num_qubits == 1 else GateSetBasis('Default GST', default_gates_two, default_spam_two, 2)
+
+
+def gate_matrix(num_qubits, gate):
+    """Gets a PTM representation of the gate"""
+    if isinstance(gate, Gate):
+        return PTM(gate).data
+    if callable(gate):
+        c = QuantumCircuit(num_qubits)
+        qubits = []
+        for i in range(num_qubits):
+            qubits.append(c.qubits[i])
+        gate(c, *qubits)
+        return PTM(c).data
+    return None
+
+
+def spam_matrix(spec, basis_gates, num_qubits) -> np.array:
+    """
+    Returns the matrix corresponding to a spam label
+    Every spam is a sequence of gates, and so the result matrix
+    is the product of the matrices corresponding to those gates
+    Params:
+        label: Spam label
+    Returns:
+        The corresponding matrix
+    """
+    f_matrices = [gate_matrix(num_qubits, basis_gates[gate_label]) for gate_label in spec]
+    result = functools.reduce(lambda a, b: a @ b, f_matrices)
+    return result
+
+
+def check_symmetric(a, rtol=1e-05, atol=1e-08):
+    return np.allclose(a, a.T, rtol=rtol, atol=atol)
+
+
+def find_spam_gates_from_gatesetbasis(basis_gates, rho, num_qubits):
+    """Given a basis_gates, the function returns a set of spam labels that form an informationally complete
+    set of independent states that yield a full rank gram matrix"""
+    basis_gates_labels = list(basis_gates.keys())
+    allstrings = [[(','.join(p)).split(',') for p in itertools.product(basis_gates_labels, repeat=i)] for i in range(4)]
+    # basis_gates_labels[0] should always be the identity
+    Selected = [(basis_gates_labels[0],), ]
+    matrix = []
+    for j in range(len(Selected)):
+        matrix.append(spam_matrix(Selected[j], basis_gates, num_qubits) @ rho)
+    for k in range(1, len(allstrings)):
+        for i in range(len(allstrings[k])):
+            spam_temp = spam_matrix(allstrings[k][i], basis_gates, num_qubits)
+            matrix2 = np.copy(matrix)
+            matrix2 = np.vstack([matrix2, spam_temp @ rho])
+            # print(np.linalg.matrix_rank(matrix2))
+            if (np.linalg.matrix_rank(matrix2) > np.linalg.matrix_rank(matrix)):
+                if (check_symmetric(spam_temp == True)):
+                    # print(1,i,'yes',np.linalg.matrix_rank(matrix2))
+                    matrix.append(spam_temp @ rho)
+                    Selected.append(allstrings[k][i])
+                    if (len(Selected) == (2 ** num_qubits) ** 2):
+                        return Selected
+    raise QiskitError(
+        f'No informationally complete fidicuals set with a full rank corresponding gram matrix can be '
+        f'found for the gateset basis"{repr(basis_gates)}"')
+
+
+def Pauli_strings(num_qubits):
+    """Returns the matrix representation of Pauli strings of size=num_qubits. e.g., for num_qubits=2, it returns
+    the matrix representations of ['II','IX','IY','IZ,'XI','YI',...]"""
+    pauli_labels = ['I', 'X', 'Y', 'Z']
+    Pauli_strings_matrices = [Pauli(''.join(p)).to_matrix() for p in
+                              itertools.product(pauli_labels, repeat=num_qubits)]
+    return Pauli_strings_matrices
+
+
+def default_init_state(num_qubits):
+    """Returns the PTM representation of the usual ground state |00...>"""
+    d = np.power(2, num_qubits)
+
+    # matrix representation of #rho in regular Hilbert space
+    matrix_init_0 = np.zeros((d, d), dtype=complex)
+    matrix_init_0[0, 0] = 1
+
+    # decompoition into Pauli strings basis (PTM representation)
+    matrix_init_pauli = [np.trace(np.dot(matrix_init_0, Pauli_strings(num_qubits)[i])) for i in
+                         range(np.power(d, 2))]
+    return np.reshape(matrix_init_pauli, (np.power(d, 2), 1))
+
+
+def gram_matrix_rank(num_qubits, spam_gates_labels, basis_gates):
+    """Returns the rank of the gram matrix and its singular values"""
+
+    rho = default_init_state(num_qubits)
+    ds = (2 ** num_qubits) ** 2
+    g = np.zeros((ds, ds), dtype=complex)
+    for i in range(ds):
+        for j in range(ds):
+            E = rho.reshape((1, ds))
+            g[i][j] = (E @ (
+                    spam_matrix(spam_gates_labels[i], basis_gates, num_qubits) @ spam_matrix(spam_gates_labels[j],
+                                                                                             basis_gates,
+                                                                                             num_qubits) @ rho))[0]
+    # rank
+    rank = np.linalg.matrix_rank(g)
+    # singular values
+    _, s, _ = np.linalg.svd(g, full_matrices=True)
+
+    return rank, s
+
+
+def gatesetbasis_constrction_from_basis_gates(basis_gates: Dict, num_qubits: int):
+    """Returns a default tomographically-complete gateset basis and the gram matrix singular values spectrum.
+       Given a Dict of basis gates, it constructs a list of informationally complete spam gates labels built
+       from the given set of  gates. The spam gates found, correspond to a full rank ideal gram matrix.
+       This is found by searching for a complete set for which:
+       1. PTM is symmetric, and since it is always real, it is hermitian as well.
+       2. Acting on #rho and #E(the native measurement and preparation states, which are assumed to be
+       the same) gives an informationally complete set of independent states.
+
+
+       Args:
+       basis_gates_labels: A list of labels corresponding to the gates Gi from which the spam gates are
+       constructed. For example:
+
+       basis_gates = {
+         'IdId': lambda circ, qubit1, qubit2: None,
+         'X I': lambda circ, qubit1, qubit2: circ.append(XGate(), [qubit2]),
+         'Y I': lambda circ, qubit1, qubit2: circ.append(YGate(), [qubit2]),
+         'I X': lambda circ, qubit1, qubit2: circ.append(XGate(), [qubit1]),
+         'I Y': lambda circ, qubit1, qubit2: circ.append(YGate(), [qubit1]),
+         'H I': lambda circ, qubit1, qubit2: circ.append(HGate(), [qubit2]),
+         'I H': lambda circ, qubit1, qubit2: circ.append(HGate(), [qubit1]),
+         'I X_Rot_90': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit1]),
+         'X_Rot_90 I': lambda circ, qubit1, qubit2: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit2]),
+          # qubit1 is the ctrl qubit, qubit2 is the target
+        }
+
+       num_qubits: number of qubits on which GST is applied
+
+       Return value: The full gatesetbasis, gram matrix full singular values spectrum
+
+       Raises:
+          QiskitError: if no informationally complete fidicuals set with a full rank corresponding
+          gram matrix could be found
+    """
+    ds = (2 ** num_qubits) ** 2
+    rho = default_init_state(num_qubits).reshape(ds)
+
+    spam_gates_labels = find_spam_gates_from_gatesetbasis(basis_gates, rho, num_qubits)
+    spam_gates = {}
+    keys = ['F' + str(i) for i in range(ds)]
+    for i in range(len(keys)):
+        spam_gates[keys[i]] = tuple(spam_gates_labels[i])
+
+    gram_rank, gram_matrix_singular_values = gram_matrix_rank(num_qubits, spam_gates_labels, basis_gates)
+    if gram_rank == ds:
+        return GateSetBasis('GST basis', basis_gates, spam_gates, num_qubits), gram_matrix_singular_values
+    else:
+        raise QiskitError(
+            f'No informationally complete fidicuals set with a full rank corresponding gram matrix'
+            f' could be found for the gateset basis"{repr(basis_gates_labels)}"')
