@@ -173,15 +173,15 @@ def default_gateset_basis(num_qubits):
 
     default_gates_single = {
         'Id': lambda circ, qubit: None,
-        'X': lambda circ, qubit: circ.append(XGate(), [qubit]),
+        'X_Rot_90': lambda circ, qubit: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit]),
         'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(0, 0), [qubit])  # changesshould be this way
     }
 
     default_spam_single = {
         'F0': ('Id',),
-        'F1': ('X',),
+        'F1': ('X_Rot_90',),
         'F2': ('Y_Rot_90',),
-        'F3': ('X', 'Y_Rot_90')
+        'F3': ('X_Rot_90', 'X_Rot_90')
     }
 
     ####################################
