@@ -20,12 +20,13 @@ Gate set tomography preparation and measurement basis
 import functools
 from typing import Tuple, Callable, Union, Optional, Dict
 import numpy as np
-
+import itertools
 # Import QISKit classes
 from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.circuit import Gate
 from qiskit.circuit.library import U2Gate, XGate, YGate, HGate, CXGate
 from qiskit.quantum_info import PTM
+from qiskit.quantum_info import Pauli
 
 
 class GateSetBasis:
@@ -174,7 +175,7 @@ def default_gateset_basis(num_qubits):
     default_gates_single = {
         'Id': lambda circ, qubit: None,
         'X_Rot_90': lambda circ, qubit: circ.append(U2Gate(-np.pi / 2, np.pi / 2), [qubit]),
-        'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(0, 0), [qubit])  # changesshould be this way
+        'Y_Rot_90': lambda circ, qubit: circ.append(U2Gate(0, 0), [qubit])
     }
 
     default_spam_single = {

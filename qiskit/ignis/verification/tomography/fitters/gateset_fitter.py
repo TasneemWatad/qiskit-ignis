@@ -75,10 +75,10 @@ class GatesetTomographyFitter:
             result_gates = fitter.fit()
             result_gate = result_gates[gate.name]
         """
-        num_qubits = gateset_basis.num_qubits
+        self.num_qubits = gateset_basis.num_qubits
         self.gateset_basis = gateset_basis
         if gateset_basis == 'default':
-            self.gateset_basis = default_gateset_basis(num_qubits)
+            self.gateset_basis = default_gateset_basis(self.num_qubits)
         self.num_qubits = self.gateset_basis.num_qubits
         data = TomographyFitter(result, circuits).data
         self.probs = {}
@@ -151,14 +151,6 @@ class GatesetTomographyFitter:
         result['rho'] = gram_inverse @ rho
         return result
 
-    @staticmethod
-    def _Pauli_strings(num_qubits):
-        """Returns the matrix representation of Pauli strings of size=num_qubits. e.g., for num_qubits=2, it returns
-        the matrix representations of ['II','IX','IY','IZ,'XI','YI',...]"""
-        pauli_labels = ['I', 'X', 'Y', 'Z']
-        Pauli_strings_matrices = [Pauli(''.join(p)).to_matrix() for p in
-                                  itertools.product(pauli_labels, repeat=num_qubits)]
-        return Pauli_strings_matrices
 
     @staticmethod
     def _default_init_state(num_qubits):
@@ -281,8 +273,8 @@ class GaugeOptimize():
         try:
             BB = np.linalg.inv(B)
         except np.linalg.LinAlgError:
-            BB = np.linalg.pinv(B)
-            # return None    #I will let it return the Pseudo inverse matrix eaither way
+            #BB = np.linalg.pinv(B)
+            return None    #I will let it return the Pseudo inverse matrix eaither way
         gateset = {label: PTM(B @ self.initial_gateset[label].data @ BB)
                    for label in self.gateset_basis.gate_labels}
         gateset['E'] = self.initial_gateset['E'] @ BB
