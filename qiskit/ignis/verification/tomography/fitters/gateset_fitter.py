@@ -29,6 +29,7 @@ from ..basis.gatesetbasis import default_gateset_basis, GateSetBasis
 from .base_fitter import TomographyFitter
 from qiskit.quantum_info import Pauli
 from functools import reduce
+import scipy.linalg as la
 
 
 class GatesetTomographyFitter:
@@ -84,7 +85,7 @@ class GatesetTomographyFitter:
         self.probs = {}
         for key, vals in data.items():
             # We assume the POVM is always |E>=|0000..><0000..|
-            self.probs[key] = vals.get('0'*self.num_qubits, 0) / sum(vals.values())
+            self.probs[key] = vals.get('0' * self.num_qubits, 0) / sum(vals.values())
 
     def linear_inversion(self) -> Dict[str, PTM]:
         """
@@ -151,7 +152,6 @@ class GatesetTomographyFitter:
         result['rho'] = gram_inverse @ rho
         return result
 
-
     @staticmethod
     def _default_init_state(num_qubits):
         """Returns the PTM representation of the usual ground state |00...>"""
@@ -209,11 +209,14 @@ class GatesetTomographyFitter:
                                   linear_inversion_results,
                                   self.gateset_basis)
         past_gauge_gateset = gauge_opt.optimize()
+
         optimizer = GST_Optimize(self.gateset_basis.gate_labels,
                                  self.gateset_basis.spam_labels,
                                  self.gateset_basis.spam_spec,
                                  self.probs, self.num_qubits)
+
         optimizer.set_initial_value(past_gauge_gateset)
+
         optimization_results = optimizer.optimize()
         return optimization_results
 
@@ -320,20 +323,52 @@ def Pauli_strings(num_qubits):
     return pauli_strings_matrices_orthonormal
 
 
-def get_cholesky_like_decomposition(mat: np.array) -> np.array:
-    """Given a PSD matrix A, finds a matrix T such that TT^{dagger}
-    is an approximation of A
-    Args:
-        mat: A nxn matrix, assumed to be positive semidefinite.
-    Returns:
-        A matrix T such that TT^{dagger} approximates A
+def make_positive_semidefinite(mat: np.array,
+                               epsilon: Optional[float] = 0
+                               ) -> np.array:
     """
-    decomposition, unitary = schur(mat, output='complex')
-    eigenvals = np.array(decomposition.diagonal())
-    # if a 0 eigenvalue is represented by infinitisimal negative float
-    eigenvals[eigenvals < 0] = 0
-    DD = np.diag(np.sqrt(eigenvals))
-    return unitary @ DD
+    Rescale a Hermitian matrix to nearest postive semidefinite matrix.
+    Args:
+        mat: a hermitian matrix.
+        epsilon: (default: 0) the threshold for setting
+            eigenvalues to zero. If epsilon > 0 positive eigenvalues
+            below epsilon will also be set to zero.
+    Raises:
+        ValueError: If epsilon is negative
+    Returns:
+        The input matrix rescaled to have non-negative eigenvalues.
+    References:
+        [1] J Smolin, JM Gambetta, G Smith, Phys. Rev. Lett. 108, 070502
+            (2012). Open access: arXiv:1106.5458 [quant-ph].
+    """
+
+    if epsilon < 0:
+        raise ValueError('epsilon must be non-negative.')
+
+    # Get the eigenvalues and eigenvectors of rho
+    # eigenvalues are sorted in increasing order
+    # v[i] <= v[i+1]
+
+    dim = len(mat)
+    v, w = la.eigh(mat)
+    for j in range(dim):
+        if v[j] < epsilon:
+            tmp = v[j]
+            v[j] = 0.
+            # Rescale remaining eigenvalues
+            x = 0.
+            for k in range(j + 1, dim):
+                x += tmp / (dim - (j + 1))
+                v[k] = v[k] + tmp / (dim - (j + 1))
+
+    # Build positive matrix from the rescaled eigenvalues
+    # and the original eigenvectors
+
+    mat_psd = np.zeros([dim, dim], dtype=complex)
+    for j in range(dim):
+        mat_psd += v[j] * np.outer(w[:, j], np.conj(w[:, j]))
+
+    return mat_psd
 
 
 class GST_Optimize:
@@ -390,7 +425,7 @@ class GST_Optimize:
     @staticmethod
     def _vec_to_complex_matrix(vec: np.array) -> np.array:
         n = int(np.sqrt(vec.size / 2))
-        if 2*n*n != vec.size:
+        if 2 * n * n != vec.size:
             raise RuntimeError("Vector of length {} cannot be reshaped"
                                " to square matrix".format(vec.size))
         size = n * n
@@ -429,10 +464,13 @@ class GST_Optimize:
                 obj_fn_data.append((matrices, m_ijk))
         return obj_fn_data
 
-    def _split_input_vector(self, x: np.array) -> Tuple:
+    def _split_input_vector(self, x: np.array, fullness: str) -> Tuple:
         """Reconstruct the GST data from its vector representation
         Args:
             x: The vector representation of the GST data
+            fullness: Takes two values, 'full': in case x has no missing elements and '0': in case the
+            last elements of each corresponding lower triangle matrix of the Cholesky decomposition of
+            the gates are missing.
 
         Returns:
             The GST data (E, rho, Gs) (see additional info)
@@ -449,6 +487,8 @@ class GST_Optimize:
             we rely on the following property: M is PSD iff there exists
             T such that M = T @ T^{dagger}.
             Hence, x stores those T matrices for E, rho and the Gs
+
+            if x has missing values, it replaces them with zeros and returns the corresponding GST data.
         """
         n = len(self.Gs)
         d = (2 ** self.qubits)
@@ -456,11 +496,19 @@ class GST_Optimize:
 
         d_t = 2 * d ** 2
         ds_t = 2 * ds ** 2
-        T_vars = self._split_list(x, [d_t, d_t] + [ds_t] * n)
+
+        if fullness == 'full':
+            T_vars = self._split_list(x, [d_t, d_t] + [ds_t] * n)
+        else:  # =='0'
+            T_vars = self._split_list(x, [d_t, d_t] + [ds_t - 1] * n)
+            # add zeros instead of last real element and it will be changed in the obj func
+            for i in range(n):
+                T_vars[2 + i] = np.insert(T_vars[2 + i], ds ** 2 - 1, 0)
 
         E_T = self._vec_to_complex_matrix(T_vars[0])
         rho_T = self._vec_to_complex_matrix(T_vars[1])
-        Gs_T = [self._vec_to_complex_matrix(T_vars[2+i]) for i in range(n)]
+
+        Gs_T = [self._vec_to_complex_matrix(T_vars[2 + i]) for i in range(n)]
 
         E = np.reshape(E_T @ np.conj(E_T.T), (1, ds))
         rho = np.reshape(rho_T @ np.conj(rho_T.T), (ds, 1))
@@ -483,15 +531,22 @@ class GST_Optimize:
             The vector representation of (E, rho, Gs)
 
         Additional information:
+            The GST data is encoded in terms of Cholesky decomposition to make sure: E, rho and every
+             G in the gateset are all PSD.
             This function performs the inverse operation to
             split_input_vector; the notations are the same.
         """
         d = (2 ** self.qubits)
+        #np.linalg returns the lower diagonal matrix T of the Cholesky decomposition T_dagger*T, but it
+        #works only with positive definite matrix. To solve this, we simply add a small matrix to shift
+        # the zero eigenvalues.
 
-        E_T = get_cholesky_like_decomposition(E.reshape((d, d)))
-        rho_T = get_cholesky_like_decomposition(rho.reshape((d, d)))
+        E_T = np.linalg.cholesky(make_positive_semidefinite(E.reshape((d, d))) + 1e-14 * np.eye(d))
+        rho_T = np.linalg.cholesky(make_positive_semidefinite(rho.reshape((d, d))) + 1e-14 * np.eye(d))
+
         Gs_Choi = [Choi(PTM(G)).data for G in Gs]
-        Gs_T = [get_cholesky_like_decomposition(G) for G in Gs_Choi]
+        Gs_Choi_mod = [make_positive_semidefinite(G) + 1e-14 * np.eye(d ** 2) for G in Gs_Choi]
+        Gs_T = [np.linalg.cholesky(G) for G in Gs_Choi_mod]
         E_vec = self._complex_matrix_to_vec(E_T)
         rho_vec = self._complex_matrix_to_vec(rho_T)
         result = E_vec + rho_vec
@@ -502,7 +557,8 @@ class GST_Optimize:
     def _obj_fn(self, x: np.array) -> float:
         """The MLE objective function
         Args:
-            x: The vector representation of the GST data (E, rho, Gs)
+            x: The vector representation of the GST data (E, rho, Gs) with the last elements of the
+            Cholesky matrices corresponding to all the gates in the gateset are missing
 
         Returns:
             The MLE cost function (see additional information)
@@ -518,9 +574,26 @@ class GST_Optimize:
             p_{ijk} = E*F_i*G_k*F_j*rho.
 
             For additional info, see section 3.5 in arXiv:1509.02921
+            and about the filling of the x vector, see the information in _complete_x method below.
         """
-        E, rho, G_matrices = self._split_input_vector(x)
-        val = 0
+        E, rho, G_matrices = self._split_input_vector(x, '0')
+        n = len(G_matrices)
+        x1 = np.copy(x)
+        x2 = np.copy(x)
+        d = (2 ** self.qubits)  # rho is dxd and starts at variable d^2
+        ds = d ** 2
+        l = 0
+        for i in range(n):
+            m = 0
+            for j in range(2 * ds ** 2 - 1):
+                m += (abs(x[4 * ds + 2 * i * ds ** 2 - l + j])) ** 2
+            l += 1
+            x1 = np.insert(x1, 4 * ds + (2 * i + 1) * ds ** 2, np.sqrt(abs(d - m)))
+            x2 = np.insert(x2, 4 * ds + (2 * i + 1) * ds ** 2, -np.sqrt(abs(d - m)))
+
+        # E, rho, G_matrices = self._split_input_vector(x)
+        E, rho, G_matrices = self._split_input_vector(x1, 'full')
+        val1 = 0
         for term in self.obj_fn_data:
             term_val = rho
             for G_index in term[0]:
@@ -529,8 +602,82 @@ class GST_Optimize:
             term_val = np.real(term_val[0][0])
             term_val = term_val - term[1]  # m_{ijk}
             term_val = term_val ** 2
-            val = val + term_val
-        return val
+            val1 = val1 + term_val
+
+        E, rho, G_matrices = self._split_input_vector(x2, 'full')
+        val2 = 0
+        for term in self.obj_fn_data:
+            term_val = rho
+            for G_index in term[0]:
+                term_val = G_matrices[G_index] @ term_val
+            term_val = E @ term_val
+            term_val = np.real(term_val[0][0])
+            term_val = term_val - term[1]  # m_{ijk}
+            term_val = term_val ** 2
+            val2 = val2 + term_val
+        return np.min([val1, val2])
+
+    def _complete_x(self, x: np.array) -> float:
+        """ Completes the x vector by adding the suitable elements to fill the deleted elements; last
+        element of each Cholesky decomposition matrices _T of the gates. The suitable elements are
+        those that give trace=2**num_qubits for the Choi matrix corresponding to each gate in the gateset.
+        As the trace does not depend on the signs of these elements, their sign is picked as the one that
+        returns lower estimation of the objection function.
+
+        Args:
+            x: The vector representation of the GST data (E, rho, Gs) with the last elements of the
+            Cholesky matrices corresponding to all the gates in the gateset are missing
+
+        Returns:
+            The full x vector representation of the GST data
+        """
+        E, rho, G_matrices = self._split_input_vector(x, '0')
+        n = len(G_matrices)
+        x1 = np.copy(x)
+        x2 = np.copy(x)
+        d = (2 ** self.qubits)  # rho is dxd and starts at variable d^2
+        ds = d ** 2
+
+        l = 0
+        for i in range(n):
+            m = 0
+
+            for j in range(2 * ds ** 2 - 1):
+                m += (abs(x[4 * ds + 2 * i * ds ** 2 - l + j])) ** 2
+            l += 1
+            x1 = np.insert(x1, 4 * ds + (2 * i + 1) * ds ** 2, np.sqrt(abs(d - m)))
+            x2 = np.insert(x2, 4 * ds + (2 * i + 1) * ds ** 2, -np.sqrt(abs(d - m)))
+
+        # E, rho, G_matrices = self._split_input_vector(x)
+        E, rho, G_matrices = self._split_input_vector(x1, 'full')
+        val1 = 0
+        for term in self.obj_fn_data:
+            term_val = rho
+            for G_index in term[0]:
+                term_val = G_matrices[G_index] @ term_val
+            term_val = E @ term_val
+            term_val = np.real(term_val[0][0])
+            term_val = term_val - term[1]  # m_{ijk}
+            term_val = term_val ** 2
+            val1 = val1 + term_val
+
+        E, rho, G_matrices = self._split_input_vector(x2, 'full')
+        val2 = 0
+        for term in self.obj_fn_data:
+            term_val = rho
+            for G_index in term[0]:
+                term_val = G_matrices[G_index] @ term_val
+            term_val = E @ term_val
+            term_val = np.real(term_val[0][0])
+            term_val = term_val - term[1]  # m_{ijk}
+            term_val = term_val ** 2
+            val2 = val2 + term_val
+
+        if (np.min([val1, val2]) == val1):
+            x = x1
+        else:
+            x = x2
+        return x
 
     def _ptm_matrix_values(self, x: np.array) -> List[np.array]:
         """Returns a vectorization of the gates matrices
@@ -548,7 +695,8 @@ class GST_Optimize:
             Choi matrix of G is T@T^{dagger}. This needs to be
             converted into the PTM representation of G.
         """
-        _, _, G_matrices = self._split_input_vector(x)
+        xfull = self._complete_x(x)
+        _, _, G_matrices = self._split_input_vector(xfull, 'full')
         result = []
         for G in G_matrices:
             result = result + self._complex_matrix_to_vec(G)
@@ -562,7 +710,8 @@ class GST_Optimize:
             The trace of rho - the initial state of the GST. The real
             and imaginary part are returned separately.
         """
-        _, rho, _ = self._split_input_vector(x)
+        xfull = self._complete_x(x)
+        _, rho, _ = self._split_input_vector(xfull, 'full')
         d = (2 ** self.qubits)  # rho is dxd and starts at variable d^2
         rho = self._convert_from_ptm(rho.reshape((d, d)))
         trace = sum([rho[i][i] for i in range(d)])
@@ -680,18 +829,22 @@ class GST_Optimize:
         num_qubits = self.qubits
         pauli_strings_matrices = Pauli_strings(num_qubits)
         v = vector.reshape(np.size(vector))
-        n = [a*b for a, b in zip(v, pauli_strings_matrices)]
+        n = [a * b for a, b in zip(v, pauli_strings_matrices)]
         return reduce(lambda x, y: np.add(x, y), n)
 
     def _process_result(self, x: np.array) -> Dict:
-        """Transforms the optimization result to a friendly format
+        """Completes and transforms the optimization result to a friendly format
         Args:
             x: the optimization result vector
 
         Returns:
             The final GST data, as dictionary.
         """
-        E, rho, G_matrices = self._split_input_vector(x)
+
+        xfinal = self._complete_x(x)
+
+        E, rho, G_matrices = self._split_input_vector(xfinal, 'full')
+
         result = {}
         result['E'] = Operator(self._convert_from_ptm(E))
         result['rho'] = DensityMatrix(self._convert_from_ptm(rho))
@@ -707,7 +860,19 @@ class GST_Optimize:
         E = initial_value['E']
         rho = initial_value['rho']
         Gs = [initial_value[label] for label in self.Gs]
-        self.initial_value = self._join_input_vector(E, rho, Gs)
+
+        initial_value_temp = self._join_input_vector(E, rho, Gs)
+        n = len(Gs)
+        d = (2 ** self.qubits)  # rho is dxd and starts at variable d^2
+        ds = d ** 2
+        m = 0
+        for i in range(n):
+            # Deleting the final elements of the cholesky decomposition matrices _T of the gates from the
+            # initial_value_temp vector (containing the vectorization of GST data).
+            initial_value_temp = np.delete(initial_value_temp, 4 * ds + (2 * i + 1) * ds ** 2 - 1 - m)
+            m += 1
+        self.initial_value = initial_value_temp
+
 
     def optimize(self, initial_value: Optional[np.array] = None) -> Dict:
         """Performs the MLE optimization for gate set tomography
